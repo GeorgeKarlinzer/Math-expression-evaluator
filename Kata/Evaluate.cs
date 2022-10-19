@@ -8,7 +8,7 @@ namespace Evaluation
 {
     public class Evaluate
     {
-        private Dictionary<string, Func<double, double>> oneArgFuncsMap = new()
+        readonly static Dictionary<string, Func<double, double>> oneArgFuncsMap = new()
         {
             { "log", Math.Log10 },
             { "ln", Math.Log },
@@ -23,19 +23,25 @@ namespace Evaluation
             { "tanh", Math.Tanh },
             { "tan", Math.Tan },
             { "sin", Math.Sin },
-            { "cos", Math.Cos },
-            { "e", x => Math.Pow(10, x) }
+            { "cos", Math.Cos }
         };
 
-        private Dictionary<string, Func<double, double, double>> twoArgsFuncsMap = new()
+        readonly static Dictionary<string, Func<double, double, double>> twoArgsFuncsMap = new()
         {
             {"+", (x, y) => x + y },
             {"-", (x, y) => x - y },
             {"*", (x, y) => x * y },
             {"/", (x, y) => x / y },
-            {"&", (x, y) => Math.Pow(x, y) },
-            {"e", (x, y) => x * Math.Pow(10, y) },
+            {"&", Math.Pow },
+            {"e", (x, y) => x * Math.Pow(10, y) }
         };
+
+        // Positive numbers regex
+        readonly static string pnr = @"(?:\d+\.\d+|\d+)";
+        // All numbers regex. NOTE: n123 = (-123)
+        readonly static string anr = @$"(?:n?{pnr})";
+        // Functions regex
+        readonly static string fr = string.Join('|', oneArgFuncsMap.Keys.ToList());
 
         public string eval(string expr)
         {
@@ -54,18 +60,8 @@ namespace Evaluation
                 // Remove whitespaces
                 expr = expr.Replace(" ", "");
 
-                // Add global brackets
-                expr = "(" + expr + ")";
-
-                // Calculate all 1ex
-                while ((m = Regex.Match(expr, @"([\d\.]+)e(-?\+?\d+)")).Success)
-                {
-                    var newValue = Calculate("e", m.Groups[1].Value, m.Groups[2].Value);
-                    expr = Replace(expr, m, newValue);
-                }
-
-                // Inverse powers (for simplified colculation)
-                //expr = InvertPowers(expr);
+                // Replace +- and -+ with -
+                expr = Regex.Replace(expr, @"\+-|-\+", "-");
 
                 // Replace multiple -
                 while ((m = Regex.Match(expr, @"(-{2,})")).Success)
@@ -74,14 +70,33 @@ namespace Evaluation
                     expr = Replace(expr, m, v);
                 }
 
-                expr = Regex.Replace(expr, @"(\+-)|(-\+)", "-");
+                // Replace all '(+num' with '(num'
+                expr = expr.Replace("(+", "(");
+
+                // Replace all *- or /- with *n or /n 
+                expr = Regex.Replace(expr, @"([*/])-", "$1n");
+
+                // Calculate all 1ex
+                while ((m = Regex.Match(expr, $@"({pnr})e(-?\+?\d+)")).Success)
+                {
+                    var arg1 = double.Parse(m.Groups[1].Value);
+                    var arg2 = double.Parse(m.Groups[2].Value);
+                    var newValue = Calculate("e", arg1, arg2);
+                    expr = Replace(expr, m, newValue);
+                }
+
+                // Add global brackets
+                expr = $"({expr})";
 
                 // Calculate all brackets without inner brackets
                 while ((m = Regex.Match(expr, @"\([^\(\)]+\)")).Success)
-                    expr = expr.Replace(m.Value, EvalSimpleInBrackets(m.Value));
+                    expr = expr.Replace(m.Value, EvalInBrackets(m.Value));
+
+                if (expr[0] == 'n')
+                    expr = $"-{expr[1..]}";
 
                 if (double.TryParse(expr, out var d))
-                    return d.ToString();
+                    return expr;
                 else
                     return "ERROR";
             }
@@ -91,118 +106,69 @@ namespace Evaluation
             }
         }
 
-        private string EvalSimpleInBrackets(string expr)
+        private string EvalInBrackets(string expr)
         {
-            // Positive numbers regex
-            var pnr = @"\d+\.\d+";
-            // All numbers regex
-            var anr = @$"(?:{pnr})|(?:-{pnr})|(?:n{pnr})|(?:-n{pnr})";
-
-
             Match m;
-            // Remove brackets
-            expr = expr.Replace("(", "");
-            expr = expr.Replace(")", "");
+            // Remove global brackets
+            expr = expr[1..^1];
+
+            if (expr[0] == '-')
+                expr = $"0{expr}";
+
+            if (Regex.IsMatch(expr, $@"^(?:{anr})$"))
+                return $"{GetNum(expr)}";
 
             // Calculate all functions
-            while ((m = Regex.Match(expr, @"([a-z]+)(-?[\d\.]+)")).Success)
+            while ((m = Regex.Match(expr, @$"({fr})({anr})")).Success)
             {
-                var funcName = m.Groups[1].Value;
-                var newValue = Calculate(funcName, m.Groups[2].Value);
+                var arg = GetNum(m.Groups[2].Value);
+                var action = m.Groups[1].Value;
+                var newValue = Calculate(action, arg);
                 expr = Replace(expr, m, newValue.ToString());
             }
 
-            // Calculate all &
-            while ((m = Regex.Match(expr, @"(\d+)&(-?[\d\.]+)")).Success)
-            {
-                var newValues = Calculate("&", m.Groups[1].Value, m.Groups[2].Value);
-                expr = Replace(expr, m, newValues);
-            }
+            var twoArgsFuncs = new[] { ("&", "(?!.*&.*)"), ("[*/]", ""), (@"[+-]", "") };
 
-            // Calculate all * /
-            while ((m = Regex.Match(expr, SimpleRegex("[*/]"))).Success)
+            foreach (var (func, addition) in twoArgsFuncs)
             {
-                var chr = m.Groups[2].Value;
-                var newValue = Calculate(chr, m.Groups[1].Value, m.Groups[3].Value);
-                expr = Replace(expr, m, newValue);
+                while((m = Regex.Match(expr, $@"({anr})({func})({anr}){addition}")).Success)
+                {
+                    var action = m.Groups[2].Value;
+                    var arg1 = GetNum(m.Groups[1].Value);
+                    var arg2 = GetNum(m.Groups[3].Value);
+                    var newValue = Calculate(action, arg1, arg2);
+                    expr = Replace(expr, m, newValue);
+                }
             }
-
-            // Calculate all + -
-            while ((m = Regex.Match(expr, SimpleRegex("[+-]"))).Success)
-            {
-                var chr = m.Groups[2].Value;
-                var newValue = Calculate(chr, m.Groups[1].Value, m.Groups[3].Value);
-                expr = Replace(expr, m, newValue);
-            }
-
-            return double.Parse(expr).ToString();
+            return $"{expr}";
         }
 
-        private string SimpleRegex(string chr) =>
-            $@"(-?[\d\.]+)({chr})(-?[\d\.]+)";
+        // Get double from string that meets anr
+        private static double GetNum(string str) =>
+            str[0] == 'n' ? -double.Parse(str[1..]) : double.Parse(str);
 
-        private string Replace(string str, Match m, string value) =>
+        private static string Replace(string str, Match m, string value) =>
             Replace(str, m.Index, m.Length, value);
 
-        private string Replace(string str, int startIndex, int length, string value) =>
+        private static string Replace(string str, int startIndex, int length, string value) =>
             str[..startIndex] + value + str[(startIndex + length)..];
 
-        private string Reverse(string str) =>
-            new string(str.Reverse().ToArray());
+        private static string Reverse(string str) =>
+            new(str.Reverse().ToArray());
 
-        private string Calculate(string chr, string arg1, string arg2 = null)
+        private static string Calculate(string chr, double arg1, double? arg2 = null)
         {
             double res;
-            var v1 = double.Parse(arg1);
             if (arg2 is null)
-                res = oneArgFuncsMap[chr](v1);
+                res = oneArgFuncsMap[chr](arg1);
             else
-            {
-                var v2 = double.Parse(arg2);
-                res = twoArgsFuncsMap[chr](v1, v2);
-            }
+                res = twoArgsFuncsMap[chr](arg1, (double)arg2);
 
             if (double.IsNaN(res) || double.IsInfinity(res))
                 throw new ArithmeticException();
 
-            return res.ToString();
-        }
-
-        private string InvertPowers(string str)
-        {
-            Match m; 
-
-            foreach(var match in Regex.Matches(str, @"&(\d+)").Cast<Match>())
-            {
-                str = Replace(str, match, $"&{Reverse(match.Groups[1].Value)}");
-            }
-
-            foreach (var match in Regex.Matches(str, @"[^&]((?:\d+&)+\d+)").Cast<Match>())
-            {
-                str = Replace(str, match, $"{match.Value[0]}{Reverse(match.Groups[1].Value)}");
-            }
-
-            while((m = Regex.Match(str, @"\)((?:&\d+)+)")).Success)
-            {
-                var closeNum = 1;
-                var openNum = 0;
-                var i = m.Index;
-                while(closeNum != openNum && --i >= 0)
-                {
-                    if (str[i] == ')')
-                        closeNum++;
-                    if (str[i] == '(')
-                        openNum++;
-                }
-                var begin = str[..i];
-                var reversed = Reverse(m.Groups[1].Value);
-                var middle = str.Substring(i, m.Index + 1 - i);
-                var end = str[(m.Index + m.Length)..];
-
-                str = $"{begin}{reversed}{middle}{end}";
-            }
-
-            return str;
+            if (res < 0) return $"n{-res}";
+            else return $"{res}";
         }
     }
 }
