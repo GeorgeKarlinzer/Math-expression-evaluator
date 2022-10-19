@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 
 namespace Evaluation
 {
-    public class Evaluate
+    public class Evaluator
     {
         readonly Dictionary<string, Func<double, double>> oneArgFuncsMap = new()
         {
@@ -45,14 +45,14 @@ namespace Evaluation
         // Functions regex
         readonly string fr;
 
-        public Evaluate()
+        public Evaluator()
         {
             pnr = @"(?:\d+\.\d+|\d+)";
             anr = @$"(?:n?{pnr})";
             fr = string.Join('|', oneArgFuncsMap.Keys.ToList());
         }
 
-        public string eval(string expr)
+        public string Evaluate(string expr)
         {
             try
             {
@@ -170,7 +170,7 @@ namespace Evaluation
                 throw new ArithmeticException();
 
             if (res < 0) return $"n{-res}";
-            else return $"{res}";
+            else return $"{Math.Abs(res)}";
         }
     }
 }
