@@ -8,7 +8,7 @@ namespace Evaluation
 {
     public class Evaluate
     {
-        readonly static Dictionary<string, Func<double, double>> oneArgFuncsMap = new()
+        readonly Dictionary<string, Func<double, double>> oneArgFuncsMap = new()
         {
             { "log", Math.Log10 },
             { "ln", Math.Log },
@@ -26,22 +26,31 @@ namespace Evaluation
             { "cos", Math.Cos }
         };
 
-        readonly static Dictionary<string, Func<double, double, double>> twoArgsFuncsMap = new()
+        readonly Dictionary<string, Func<double, double, double>> twoArgsFuncsMap = new()
         {
-            {"+", (x, y) => x + y },
-            {"-", (x, y) => x - y },
-            {"*", (x, y) => x * y },
-            {"/", (x, y) => x / y },
-            {"&", Math.Pow },
-            {"e", (x, y) => x * Math.Pow(10, y) }
+            { "+", (x, y) => x + y },
+            { "-", (x, y) => x - y },
+            { "*", (x, y) => x * y },
+            { "/", (x, y) => x / y },
+            { "&", Math.Pow },
+            { "e", (x, y) => x * Math.Pow(10, y) }
         };
 
         // Positive numbers regex
-        readonly static string pnr = @"(?:\d+\.\d+|\d+)";
-        // All numbers regex. NOTE: n123 = (-123)
-        readonly static string anr = @$"(?:n?{pnr})";
+        readonly string pnr;
+        // All numbers regex
+        // NOTE: all negative numbers are replaced with n. Example: -123 -> n123
+        // That helps open brackets, so (-2)&2 -> n2&2 -> 4, not (-2)&2 -> -2&2 -> -4
+        readonly string anr;
         // Functions regex
-        readonly static string fr = string.Join('|', oneArgFuncsMap.Keys.ToList());
+        readonly string fr;
+
+        public Evaluate()
+        {
+            pnr = @"(?:\d+\.\d+|\d+)";
+            anr = @$"(?:n?{pnr})";
+            fr = string.Join('|', oneArgFuncsMap.Keys.ToList());
+        }
 
         public string eval(string expr)
         {
@@ -57,6 +66,9 @@ namespace Evaluation
                 if (words.Any(x => !oneArgFuncsMap.ContainsKey(x) && x != "e"))
                     return "ERROR";
 
+                // Add global brackets
+                expr = $"({expr})";
+
                 // Remove whitespaces
                 expr = expr.Replace(" ", "");
 
@@ -70,10 +82,10 @@ namespace Evaluation
                     expr = Replace(expr, m, v);
                 }
 
-                // Replace all '(+num' with '(num'
-                expr = expr.Replace("(+", "(");
+                // Replace all (- and (+ with (0- and (0+
+                expr = Regex.Replace(expr, @"\(([+-])", "(0$1");
 
-                // Replace all *- or /- with *n or /n 
+                // Replace all *- and /- with *n and /n 
                 expr = Regex.Replace(expr, @"([*/])-", "$1n");
 
                 // Calculate all 1ex
@@ -85,23 +97,21 @@ namespace Evaluation
                     expr = Replace(expr, m, newValue);
                 }
 
-                // Add global brackets
-                expr = $"({expr})";
-
                 // Calculate all brackets without inner brackets
                 while ((m = Regex.Match(expr, @"\([^\(\)]+\)")).Success)
                     expr = expr.Replace(m.Value, EvalInBrackets(m.Value));
 
+                // Replace n with - if needed
                 if (expr[0] == 'n')
                     expr = $"-{expr[1..]}";
-
-                if (double.TryParse(expr, out var d))
-                    return expr;
-                else
-                    return "ERROR";
+                
+                // If result is not a number return ERROR
+                if (double.TryParse(expr, out var d)) return expr;
+                else return "ERROR";
             }
             catch
             {
+                // Exceptions during calculations cause returning ERROR
                 return "ERROR";
             }
         }
@@ -112,11 +122,8 @@ namespace Evaluation
             // Remove global brackets
             expr = expr[1..^1];
 
-            if (expr[0] == '-')
-                expr = $"0{expr}";
-
             if (Regex.IsMatch(expr, $@"^(?:{anr})$"))
-                return $"{GetNum(expr)}";
+                return expr;
 
             // Calculate all functions
             while ((m = Regex.Match(expr, @$"({fr})({anr})")).Success)
@@ -127,11 +134,12 @@ namespace Evaluation
                 expr = Replace(expr, m, newValue.ToString());
             }
 
+            // Calculate all &*/+- actions
             var twoArgsFuncs = new[] { ("&", "(?!.*&.*)"), ("[*/]", ""), (@"[+-]", "") };
 
             foreach (var (func, addition) in twoArgsFuncs)
             {
-                while((m = Regex.Match(expr, $@"({anr})({func})({anr}){addition}")).Success)
+                while ((m = Regex.Match(expr, $@"({anr})({func})({anr}){addition}")).Success)
                 {
                     var action = m.Groups[2].Value;
                     var arg1 = GetNum(m.Groups[1].Value);
@@ -140,23 +148,17 @@ namespace Evaluation
                     expr = Replace(expr, m, newValue);
                 }
             }
+
             return $"{expr}";
         }
 
-        // Get double from string that meets anr
-        private static double GetNum(string str) =>
+        private double GetNum(string str) =>
             str[0] == 'n' ? -double.Parse(str[1..]) : double.Parse(str);
 
-        private static string Replace(string str, Match m, string value) =>
-            Replace(str, m.Index, m.Length, value);
+        private string Replace(string str, Match m, string value) =>
+            str[..m.Index] + value + str[(m.Index + m.Length)..];
 
-        private static string Replace(string str, int startIndex, int length, string value) =>
-            str[..startIndex] + value + str[(startIndex + length)..];
-
-        private static string Reverse(string str) =>
-            new(str.Reverse().ToArray());
-
-        private static string Calculate(string chr, double arg1, double? arg2 = null)
+        private string Calculate(string chr, double arg1, double? arg2 = null)
         {
             double res;
             if (arg2 is null)
